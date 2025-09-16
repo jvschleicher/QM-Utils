@@ -1,0 +1,681 @@
+#!/bin/bash
+#       subg16 -  Gaussian 16 submit script
+
+SCRIPT_ROOT="/home/$USER/bin"
+
+#
+# Setup the default values for the user options.
+#
+
+memory="16000"
+cpunr="4"
+resources=""
+version="g16c01"
+walltime="2-23:00:00"
+
+#
+# Defines the location of the programs.
+#
+
+binary_location="/ssoft/gaussian"
+soft_location="$SCRIPT_ROOT"
+infile_awk_script="subg16_nproc_rwf.awk"
+
+#
+# Define the dafault parallel technics used.
+#
+
+parallel_linda="linda"
+parallel_shared="shared"
+parallel_execution="$parallel_shared"
+
+#
+# Routine for the display of the usage description of the
+# command.
+#
+
+function usage
+{
+    cat <<-EOF
+
+	NAME
+	    subg16 - Gaussian 16 submit script
+
+	SYNTAX
+	    subg16 [ options ] <filename>
+
+	DESCRIPTION
+	    Submits the a Gaussian16 calculation with the input file <filename>.
+	    You may specify <filename> with or without extension "{ .com .in }",
+	    but the real existing input file must have one of the suffixes. 
+
+	OPTIONS
+	    -c
+	        Enable classic handling of checkpoint files. This option will delete
+	        any given path in the "%chk=..." statement. Instead the path to the
+	        input- and output-file will be used.
+
+	    -f
+	        All files in the scratch directory will be copied back to the directory
+	        of the job. The files named Gau-* and the internal files of the queuing-
+	        system are excluded from this copy mechanism. So choose the filenames
+	        of your to be created files carefully.
+
+	    -h
+	        Put the job on hold, until released by the user.
+
+	    -k
+	        Keep the generated commandfile in ~/cmd. It will neither be
+	        deleted, nor submitted.
+
+	    -l
+	        Request a Linda parallel job. Otherwise your system default
+	        is taken for the execution of the job. If used together with -s,
+	        only the later one will be of any effect.
+
+	    -m <mem>
+	        Request a queue with a job memory of <mem> MB. The default
+	        value for <mem> is $memory MB.
+
+	    -N <jobtitle>
+	        By default the name of the input file will be taken for the name of
+	        the job also. If this is not convenient (or possible as the name of
+	        the file starts with a digit), you can force the job to get
+	        a chosen name of your own. If this <jobtitle> ends with a hash,
+	        it will be substituted with the the default name. E.g. "-N run_#" for
+	        the input file "test.in" will result in "run_test" as jobname.
+
+	    -o <option>
+	        Request special resources on Gridware queueing system. You
+	        may specify more than one option using the form:
+	        <option>='<option>{,<option>}'
+
+	    -p <cpunr>
+	        If you specify the -p option, you can request a parallel
+	        execution of the job with more than one CPU, which is the
+	        default.
+
+	    -r
+	        Retain all given "%rwf=..." statements in the inputfile. The normal
+	        behavior is to copy the first found "%rwf=..." statement in the input
+	        file after each "--Link1--" command.
+
+	    -s
+	        Request a Shared Memory parallel job. Otherwise your system default
+	        is taken for the execution of the job. If used together with -l,
+	        only the later one will be of any effect.
+
+	    -t <time>
+	        Requests a computation with a wall-time different than the default.
+	        The default is $walltime.
+
+	    -v <version>
+	        Specifies, what executable should be used for the G16 job. The avail-
+	        able choices are:
+
+	         g16a03        Gaussian16, A.03 release
+
+	FILES
+	    \$cwd/.subrc            cwd default option file
+	    \$HOME/.subrc           user default option file
+	    <script_root>/subrc    common default option file
+
+	DESCRIPTION
+	    Each line in these files may have options for the used submit scripts. First
+	    in each line the name of the targeted submit script has to be specified, which
+	    is the scriptname without the prefix "sub", hence a line might read like:
+
+	    g16 -m 450 -N ExtraName -h
+
+	    If an option line occurs multiple times for one type of submit script, then all
+	    are read and processed one after the other.
+
+	    All or some of the above mentioned option files may exist and are processed in
+	    the reverse order.
+
+	    Options given on the command line are processed last and may overwrite any of the
+	    options in the option file.
+
+	EOF
+
+    exit 2
+}
+
+#
+# If there is an unrecoverable error: display a message and exit.
+#
+
+function printExit
+{
+    case $1 in
+        [iI]) echo INFO: "$2" ;;
+        [wW]) echo WARNING: "$2" ;;
+        [eE]) echo ERROR: "$2" ; exit 1 ;;
+           *) echo "$1" ;;
+    esac
+}
+
+#
+# Test, whether we can access the given file for input.
+#
+
+function testFile
+{
+    if [ ! -r "$1" -o ! -f "$1" ] ; then
+        if [ "$2" = "return" ] ; then
+            returncode="-1"
+        else
+            printExit E "Inputfile \"$1\" was not found."
+        fi
+    else
+        returncode="0"
+    fi
+
+    return "$returncode"
+}
+
+#
+# Process options from the command line or the rc files.
+#
+
+function settings()
+{
+    OPTIND=1
+
+    while getopts :cfhklm:N:o:p:qrst:v: options ; do
+        case $options in
+
+            c) if [ -z "$CMDOPT_C" ] ; then
+                   CMDOPT_C="1"
+               else
+                   unset CMDOPT_C
+               fi ;;
+
+            f) CMDOPT_F="1" ;;
+
+            h) CMDOPT_H="1" ;;
+
+            k) CMDOPT_K="1" ;;
+
+            l) parallel_execution="$parallel_linda" ;;
+
+            m) memory=$OPTARG ;;
+
+            N) CMDOPT_N="1"
+               jobtitle=$OPTARG ;;
+
+            o) resources="$OPTARG" ;;
+
+            p) CMDOPT_P="1"
+               cpunr=$OPTARG ;;
+
+            q) CMDOPT_Q="1" ;;
+
+            r) CMDOPT_R="1" ;;
+
+            s) parallel_execution="$parallel_shared" ;;
+
+            t) CMDOPT_T="1"
+               walltime=$OPTARG ;;
+
+            v) version=$OPTARG ;;
+
+           \?) printExit E "Invalid option: -$OPTARG." ;;
+
+        esac
+    done
+}
+
+#
+# Test, whether there are any user inputs. Else display the usage
+# description of the command.
+#
+
+[ -z "$1" ] && usage
+
+#
+# Test the three possible default files, before the command line
+# is tested for the various options.
+#
+
+program=${0##*/sub}
+declare -a DEFAULT_FILE_LOCATION
+DEFAULT_FILE_LOCATION[1]=$SCRIPT_ROOT/subrc
+DEFAULT_FILE_LOCATION[2]=~/.subrc
+if [ `pwd` != ~ ]; then
+    DEFAULT_FILE_LOCATION[3]=.subrc
+fi
+for DEFAULT_FILE in ${DEFAULT_FILE_LOCATION[@]}; do
+    if [ -f "$DEFAULT_FILE" -a -r "$DEFAULT_FILE" ]; then
+        PARAMETER=`sed -n -e "/^ *$program/s/$program *//p" $DEFAULT_FILE`
+        if [ -n "$PARAMETER" ]; then
+            settings $PARAMETER
+        fi
+    fi
+done
+
+#
+# Now process the command line.
+#
+
+settings "$@"
+
+#
+# Shift the arguments up to the input without the option prefix "-".
+# This should be the filename.
+#
+
+shift $((OPTIND-1))
+
+#
+# Is the requested version of Gaussian available?
+#
+
+case "$version" in
+
+      g16c01) binary_location="$binary_location/g16-C.01/" ;;
+
+           *) printExit E "Unknown program version requested."
+
+esac
+
+#
+# Setup the default locations for the submitscript and the output/error
+# files.
+#
+
+submitfiledir=$HOME/cmd
+[ -d $submitfiledir ] || mkdir -p $submitfiledir || printExit E "Can't create \"$submitfiledir\"."
+[ -r $submitfiledir -a -w $submitfiledir ] || printExit E "Invalid permissions for \"$submitfiledir\"."
+stdoutdir=$HOME/err
+[ -d $stdoutdir ] || mkdir -p $stdoutdir || printExit E "Can't create \"$stdoutdir\"."
+[ -r $stdoutdir -a -w $stdoutdir ] || printExit E "Invalid permissions for \"$stdoutdir\"."
+chkdir=$HOME/chk
+[ -d $chkdir ] || mkdir -p $chkdir || printExit E "Can't create \"$chkdir\"."
+[ -r $chkdir -a -w $chkdir ] || printExit E "Invalid permissions for \"$chkdir\"."
+
+#
+# Test, whether was a filename specified at all. Else exit.
+#
+
+if [ -z "$1" ] ; then
+    printExit E "No filename specified."
+else
+    myname=$1
+fi
+
+#
+# Assemble the names for the input, output and error file.
+#
+
+inputsuffix=(.com .inp .gjf)
+outputsuffix=(.log .out)
+choices=${#inputsuffix[*]}
+found=""
+
+if [ "${myname##*.}" != "$myname" ] ; then
+    for ((suffix=0; suffix<choices; suffix++)) ; do
+        if [ ".${myname##*.}" = "${inputsuffix[$suffix]}" ] ; then
+            testFile "$myname"
+            found="1"
+            jobname=${myname%${inputsuffix[$suffix]}}
+            if [ "${jobname:0:1}" = "/" ] ; then
+                infile=$jobname${inputsuffix[$suffix]}
+                outfile=$jobname${outputsuffix[$suffix]}
+                fchkfile=$jobname.fchk
+            else
+                infile=$PWD/$jobname${inputsuffix[$suffix]}
+                outfile=$PWD/$jobname${outputsuffix[$suffix]}
+                fchkfile=$PWD/$jobname.fchk
+            fi
+            break
+        fi
+    done
+fi
+
+if [ -z "$found" ] ; then
+    jobname="$myname"
+    for ((suffix=0; suffix<choices; suffix++)) ; do
+        if testFile "$jobname${inputsuffix[$suffix]}" "return" ; then
+            if [ -n "$found" ] ; then
+                printExit E "The name \"$myname\" is ambiguous, because more than one file with the possible suffixes [ ${inputsuffix[*]} ] exist."
+            else
+                found="1"
+                if [ "${jobname:0:1}" = "/" ] ; then
+                    infile=$jobname${inputsuffix[$suffix]}
+                    outfile=$jobname${outputsuffix[$suffix]}
+                    fchkfile=$jobname.fchk
+                else
+                    infile=$PWD/$jobname${inputsuffix[$suffix]}
+                    outfile=$PWD/$jobname${outputsuffix[$suffix]}
+                    fchkfile=$PWD/$jobname.fchk
+                fi
+            fi
+        fi
+    done
+    if [ -z "$found" ] ; then
+        if testFile "$myname" "return" ; then
+            printExit E "Your file \"$myname\" was found, but you have to append a suffix { ${inputsuffix[*]} } for clearness."
+        else
+            printExit E "No file \"$myname\" ending in [ ${inputsuffix[*]} ] was found."
+        fi
+    fi
+fi
+
+#
+# Set some other filenames.
+#
+
+jobname=${jobname##*/}
+if [ ! "$CMDOPT_N" ]; then
+    jobtitle=$jobname
+else
+    if [ "${jobtitle:${#jobtitle}-1:1}" = "#" ]; then
+        jobtitle="${jobtitle:0:${#jobtitle}-1}$jobname"
+    fi
+fi
+jobpath=${infile%/*}
+
+submitfile=$submitfiledir/$jobname.g16.sh
+stderrfile=$stdoutdir/$jobname.stderr
+stdoutfile=$stdoutdir/$jobname.stdout
+rm -f $submitfile
+rm -f $stderrfile
+rm -f $stdoutfile
+
+#
+# Look for "%rwf=" in the Gaussian input. It's no longer allowed to use
+# any / in this line, instead they should go to the standard temporary
+# directory.
+#
+
+myrwf=`grep -i %rwf= $infile`
+myselection=`echo $myrwf |  sed "s/[^/]//g"`
+myslashcount=${#myselection}
+if [ $myslashcount -gt 0 ] ; then
+    printExit E "\"%rwf...\" statement contains $myslashcount /'s, please remove them."
+fi
+
+#
+# Advice the user in the case of an absent "%chk=" statement, that
+# the file will not be accessible, because it will go to the
+# standard temporary directory. If it it present without any path
+# to the file, it will be copied to the ~/chk directory of the user.
+#
+
+mychkhandling="none"
+mychk=`grep -i %chk= $infile`
+myselection=`echo $mychk |  sed "s/[^/]//g"`
+myslashcount=${#myselection}
+if [ -z "$mychk" ] ; then
+    printExit W "\"%chk...\" statement not present in input file, no checkpoint files will be accessible!"
+elif [ -n "$CMDOPT_C" ] ; then
+    printExit I "The path to the checkpoint file will be replaced with the path to the input file."
+elif [ $myslashcount -eq 0 ] ; then
+    mychkhandling="copy"  
+    mychkfile=${mychk##*=}
+    mychkname=${mychkfile%.chk*}
+    if [ -z "$mychkfile" ] ; then
+        printExit E "\"%chk...\" statement present, but no filename given!"
+    elif [ -e ${mychkname}.chk ] ; then
+        mychkcopy="true"
+        chkfile=$jobpath/${mychkname}.chk
+    fi
+#    printExit I "The checkpoint file will be copied to your ~/chk directory, after the job had finished."
+fi
+
+#
+# Test the option string for spaces.
+#
+
+if [ "$resources" != "${resources/ //}" ]; then
+    printExit E "The option string supplied to -o must not contain any spaces."
+fi
+
+#
+# Give the user some feedback, that all tests went okay, and the job is to
+# be submitted.
+#
+
+echo "Submitting a Gaussian16 calculation for: ${infile##*/}"
+echo "Memory: $memory MB, #CPU: $cpunr"
+
+#
+# Open the file descriptor 3 for the output of the assembled
+# submit script.
+#
+
+exec 3> $submitfile
+
+#
+# Write the standard header to the submit file. This lines will be there in every case.
+#
+
+cat >&3 <<-EOF
+	#!/bin/bash -l
+	#SBATCH -J $jobtitle
+	#SBATCH --mail-type=end
+	#SBATCH --mail-type=fail
+	#SBATCH --mem=${memory}
+	EOF
+
+#
+# If the user specifies a wall-time limit, ask for the week QoS 
+#
+
+if [ -n "$CMDOPT_T" ] ; then
+    echo "#SBATCH --qos=week" >&3
+    echo "#SBATCH --time=${walltime}" >&3
+else
+    echo "#SBATCH --time=${walltime}" >&3
+fi
+
+
+
+#
+# If the user puts the job on hold, include this.
+#
+
+if [ -n "$CMDOPT_H" ] ; then
+    echo "#SBATCH -H" >&3
+fi
+
+#
+# If the user specify some extra options, include this line in the
+# submit file.
+#
+
+if [ -n "$resources" ] ; then
+    echo "#SBATCH -B $resources" >&3
+fi
+
+#
+# Is the an "%nproc" statement in the input file? Then advice the user that
+# it will be ignored, and replaced/added by the submit script.
+#
+
+if [ `grep -i "%nproc" $infile | wc -l` -ne 0 ] ; then
+    printExit W "\"%nproc...\" statement in input file is dispensable!"
+fi
+
+#
+# Decide, whether there is just one CPU requested, or a parallel job
+# should be created.
+#
+
+if [ "$cpunr" -gt 1 ] ; then
+
+#
+# This is the parallel configuration of the Gaussian program.
+#
+
+#
+# Generate an updated input file for Linda. The original file is not altered,
+# instead a copy is written to the standard temporary directory. Advise the
+# user also, when she/he included a "%nproc=" or "%nprocl=" statement
+# on her/his own. The original line will be ignored. Instead a new "%npocl="
+# statement will added in front of the original file.
+#
+
+    parallel_infile=$jobname.in.parallel
+
+#
+# Generate the whole script now.
+#
+
+#
+# Changed the lindaworkers part to use a different structure
+#
+    if [ "$parallel_execution" = "$parallel_linda" ] ; then
+        cat >&3 <<-EOF
+		#SBATCH --nodes=1
+		#SBATCH --ntasks-per-node=$cpunr
+		##slmodules -r deprecated
+		##module load gaussian/g16-A.03
+		export SLURM_TMPDIR=/tmp/$USER/\${SLURM_JOBID}.slurm
+		mkdir -p \$SLURM_TMPDIR
+		cd \$TMPDIR
+		EOF
+        if [ "$mychkcopy" = "true" ] ; then
+            echo "cp $chkfile ." >&3
+        fi
+	cat >&3 <<-EOF
+		awk -v mynproc="%lindaworkers=\`uniq -c \${NODEFILE} | awk '{ if (\$1 == "1")  print \$2 ; else print \$2 ":" \$1 }' | sed -e :a -e '$!N;s/\n/,/;ta'\`" -v myrwf_retain="$CMDOPT_R" -v mychkpath="$jobpath" -v mychkclassic="$CMDOPT_C" -f $soft_location/$infile_awk_script < $infile > $parallel_infile
+		g16 < $parallel_infile > $outfile
+		joberror=\$?
+		EOF
+    elif [ "$parallel_execution" = "$parallel_shared" ] ; then
+        cat >&3 <<-EOF
+		#SBATCH --nodes=1
+		#SBATCH --ntasks-per-node=$cpunr
+		##slmodules -r deprecated
+	        ##module load gaussian/g16-C.01	
+		export SLURM_TMPDIR=/tmp/$USER/\${SLURM_JOBID}.slurm
+		mkdir -p \$SLURM_TMPDIR
+		cd \$SLURM_TMPDIR
+		EOF
+        if [ "$mychkcopy" = "true" ] ; then
+            echo "cp $chkfile ." >&3
+        fi
+        cat >&3 <<-EOF
+		awk -v mynproc="%nprocs=$cpunr" -v myrwf_retain="$CMDOPT_R" -v mychkpath="$jobpath" -v mychkclassic="$CMDOPT_C" -f $soft_location/$infile_awk_script < $infile > $parallel_infile
+		g16 < $parallel_infile > $outfile
+		joberror=\$?
+		EOF
+    else
+        printExit E "Internal Error while creating parallel job."
+    fi
+
+#
+# End of the parallel configuration.
+#
+
+else
+
+#
+# This is the serial configuration of the Gaussian program.
+#
+
+#
+# Remove any line for multiple processors in the input file.
+#
+
+    serial_infile=$jobname.in.serial
+
+#
+# Generate the whole script now.
+#
+
+    cat >&3 <<-EOF
+	#SBATCH --nodes=1
+	#SBATCH --ntasks-per-node=1
+	##slmodules -r deprecated
+        ##module load gaussian/g16-C.01	
+	export SLURM_TMPDIR=/tmp/$USER/\${SLURM_JOBID}.slurm
+	mkdir -p \$SLURM_TMPDIR
+	cd \$SLURM_TMPDIR
+	EOF
+        if [ "$mychkcopy" = "true" ] ; then
+            echo "cp $chkfile ." >&3
+        fi
+    cat >&3 <<-EOF
+	awk -v myrwf_retain="$CMDOPT_R" -v mychkpath="$jobpath" -v mychkclassic="$CMDOPT_C" -f $soft_location/$infile_awk_script < $infile > $serial_infile
+	g16 < $serial_infile > $outfile
+	joberror=\$?
+	EOF
+
+#
+# End of the serial configuration.
+#
+
+fi
+
+#
+# Is a special handling of the checkpoint file neccessary?
+#
+
+if [ "$mychkhandling" = "copy" ] ; then
+    cat >&3 <<-EOF
+	if [ -f "$mychkname.chk" ] ; then
+	    cp $mychkname.chk $jobpath
+	fi
+	EOF
+fi
+
+#
+# Is a special handling of created files neccessary?
+#
+
+if [ -n "$CMDOPT_F" ] ; then
+    cat >&3 <<-EOF
+	for i in *; do
+	    if [ "\${i:0:3}" != "Gau" -a \
+	         "\$i" != "machines" -a \
+	         "\$i" != "rsh" -a \
+	         "\$i" != "qrsh_client_cache" -a \
+	         "\$i" != "$parallel_infile" -a \
+	         "\$i" != "$serial_infile" ]; then
+	        if [ -r "\$i" -a -f "\$i" ]; then
+	            cp \$i $jobpath
+	            chmod 644 $jobpath/\$i
+	        fi
+	    fi
+	done
+	EOF
+fi
+
+#
+# Delete the $TMPDIR and give back the error, to avoid confusion.
+#
+
+cat >&3 <<-EOF
+	cd \$HOME
+	rm -rf \$SLURM_TMPDIR
+	exit \$joberror
+	EOF
+
+#
+# Close the file descriptor for the submit file.
+#
+
+exec 3>&-
+
+#
+# Now, there are only two things left to do:
+# Submit the submitfile, and afterwards delete it.
+# (Unless "keep" option selected.)
+#
+
+if [ -z "$CMDOPT_K" ] ; then
+    sbatch $submitfile
+    rm -f $submitfile
+else
+    echo "Keeping the submitfile. Necessary command to submit this job:"
+    echo "    sbatch $submitfile"
+fi
+
+#
+# Well, that's all. Now exit in a proper way.
+#
+
+exit 0
