@@ -117,6 +117,34 @@ for i in range(len(filenames_gjf)):
             #print(line)
             lines_before.append(line)
         #print(lines_before)
+        
+        # Remove connectivity/internal coordinate lines after the geometry block
+        # Find the first blank line after the coordinates (line 6+)
+        coord_end_idx = -1
+        for idx in range(6, len(lines_before)):
+            line = lines_before[idx].strip()
+            if line == "":
+                coord_end_idx = idx
+                break
+        
+        # If we found the blank line after coordinates, remove everything after it
+        # except for modredundant statements (lines starting with B, A, D, X)
+        if coord_end_idx > 0:
+            # Check if there are any modredundant statements after all the connectivity
+            modredundant_lines = []
+            for idx in range(coord_end_idx + 1, len(lines_before)):
+                line = lines_before[idx].strip()
+                # Keep only lines that start with B, A, D, or X (modredundant statements)
+                if line != "" and len(line) > 0 and line[0] in ['B', 'A', 'D', 'X']:
+                    modredundant_lines.append(lines_before[idx])
+            
+            # Keep everything up to and including the blank line after coords
+            # Then add back any modredundant statements
+            lines_before = lines_before[:coord_end_idx + 1]
+            if modredundant_lines:
+                lines_before.extend(modredundant_lines)
+                lines_before.append("\n")  # Add final blank line
+        
         lines_before[0]="%chk="+ filename[:-4]+".chk\n" 
 #change the 2nd line (input line to the one previously defined)
         lines_before[1] = method_line + "\n"
