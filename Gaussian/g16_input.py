@@ -75,7 +75,7 @@ for file in os.listdir(path):
 for i in range(len(filenames_gjf)):
     filename = filenames_gjf[i]
     
-    if "ts" in filename.lower() and "scan" not in filename.lower():
+    if "ts" in filename.lower() and "scan" not in filename.lower() and '_f' not in filename.lower() :
 
         type = "optts"
         method_line = '# ' + meth + " " + basis + " " + disp + " " + solv + " opt=(ts, noeigentest, calcfc, maxstep=10) freq=noraman"
@@ -88,7 +88,7 @@ for i in range(len(filenames_gjf)):
         type = "IRCrv"
         method_line = '# ' + meth + " " + basis + " " + disp + " " + solv + " IRC=(reverse,maxpoints=150,recalc=10,calcfc,maxcycle=40,tight,cartesian,lqa,stepsize=15)"
         method_short = meth + "_" + dis + "_" + basis + "_" +  sol + "_IRCrv"
-    elif "int" in filename.lower() and "scan" not in filename.lower():
+    elif "int" in filename.lower() and "scan" not in filename.lower() and '_f' not in filename.lower():
         type = "optfreq"
         method_line = '# ' + meth + " " + basis + " " + disp + " " + solv + " opt freq=noraman"
         method_short = meth + "_" + dis + "_" + basis + "_" +  sol + "_optfreq"
@@ -194,5 +194,5 @@ for i in range(len(filenames_com)):
     #print(isExist)
     if submit == "y":
         if not isExist:
-            command = "subg16 -p 4 -m 16000 " + filename
+            command = "subg16_jed -p 4 -m 16000 " + filename
             os.system(command)
