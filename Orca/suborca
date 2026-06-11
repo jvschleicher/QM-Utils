@@ -1,0 +1,481 @@
+#!/bin/bash
+#       suborca -  ORCA submit script
+
+#SCRIPT_ROOT="/software/submission"
+SCRIPT_ROOT=$(dirname $(realpath $0))
+echo $SCRIPT_ROOT
+
+#
+# Setup the default values for the user options.
+#
+
+memory="8000"
+nodes="1"
+cpunr="2"
+time_limit="1-00:00:00"
+resources=""
+version="601"
+
+CMDOPT_C="1"
+
+#
+# Defines the location of the programs.
+#
+
+soft_location="$SCRIPT_ROOT"
+
+#
+# Routine for the display of the usage description of the
+# command.
+#
+
+function usage
+{
+    cat <<-EOF
+
+	NAME
+	    suborca - ORCA submit script
+
+	SYNTAX
+	    suborca [ options ] <filename>
+
+	DESCRIPTION
+	    Submits the an ORCA calculation with the input file <filename>. You may
+	    specify <filename> with or without extension "{ .inp }", but the real
+	    real existing input file must have one of the suffixes. 
+
+	OPTIONS
+	    -h
+	        Put the job on hold, until released by the user.
+
+	    -k
+	        Keep the generated commandfile in ~/cmd. It will neither be
+	        deleted, nor submitted.
+
+	    -m <mem>
+	        Request a queue with a job memory of <mem> MB. The default
+	        value for <mem> is $memory MB.
+
+	    -N <jobtitle>
+	        By default the name of the input file will be taken for the name of
+	        the job also. If this is not convenient (or possible as the name of
+	        the file starts with a digit), you can force the job to get
+	        a chosen name of your own. If this <jobtitle> ends with a hash,
+	        it will be substituted with the the default name. E.g. "-N run_#" for
+	        the input file "test.in" will result in "run_test" as jobname.
+
+	    -n <nodes>
+	        If you specify the -n option you request a parallel job with more
+	        than one machine. This keyword only defines the number of nodes, not
+	        the number of cores per node, so it should be set together with -p.
+
+	    -o <option>
+	        Request special resources on queuing system. You may specify more than
+	        one option using the form:
+	        <option>='<option>{,<option>}'
+
+	    -p <cpunr>
+	        If you specify the -p option, you can request a parallel
+	        execution of the job with more than one CPU, which is the
+	        default.
+
+        -t <time>
+            Request a walltime limit for Slurm via --time=<time>.
+            The default value is $time_limit (one day).
+
+	    -v <version>
+	        Specifies, what executable should be used for the ORCA job. The avail-
+	        able choices are:
+
+                 504           ORCA, 5.0.4 release (default)
+                 601           ORCA, 6.0.1 release
+
+	FILES
+	    \$cwd/.subrc            cwd default option file
+	    \$HOME/.subrc           user default option file
+	    <script_root>/subrc    common default option file
+
+	DESCRIPTION
+	    Each line in these files may have options for the used submit scripts. First
+	    in each line the name of the targeted submit script has to be specified, which
+	    is the scriptname without the prefix "sub", hence a line might read like:
+
+	    orca -m 504 -N ExtraName -h
+
+	    If an option line occurs multiple times for one type of submit script, then all
+	    are read and processed one after the other.
+
+	    All or some of the above mentioned option files may exist and are processed in
+	    the reverse order.
+
+	    Options given on the command line are processed last and may overwrite any of the
+	    options in the option file.
+
+	EOF
+
+    exit 2
+}
+
+#
+# If there is an unrecoverable error: display a message and exit.
+#
+
+function printExit
+{
+    case $1 in
+        [iI]) echo INFO: "$2" ;;
+        [wW]) echo WARNING: "$2" ;;
+        [eE]) echo ERROR: "$2" ; exit 1 ;;
+           *) echo "$1" ;;
+    esac
+}
+
+#
+# Test, whether we can access the given file for input.
+#
+
+function testFile
+{
+    if [ ! -r "$1" -o ! -f "$1" ] ; then
+        if [ "$2" = "return" ] ; then
+            returncode="-1"
+        else
+            printExit E "Inputfile \"$1\" was not found."
+        fi
+    else
+        returncode="0"
+    fi
+
+    return "$returncode"
+}
+
+#
+# Process options from the command line or the rc files.
+#
+
+function settings()
+{
+    OPTIND=1
+
+    while getopts :hkm:N:n:o:p:t:v: options ; do
+        case $options in
+
+            h) CMDOPT_H="1" ;;
+
+            k) CMDOPT_K="1" ;;
+
+            m) memory=$OPTARG ;;
+
+            N) CMDOPT_N="1"
+               jobtitle=$OPTARG ;;
+
+            n) nodes=$OPTARG ;;
+
+            o) resources="$OPTARG" ;;
+
+            p) CMDOPT_P="1"
+               cpunr=$OPTARG ;;
+
+                t) time_limit=$OPTARG ;;
+
+            v) version=$OPTARG ;;
+
+           \?) printExit E "Invalid option: -$OPTARG." ;;
+
+        esac
+    done
+}
+
+#
+# Test, whether there are any user inputs. Else display the usage
+# description of the command.
+#
+
+[ -z "$1" ] && usage
+
+#
+# Test the three possible default files, before the command line
+# is tested for the various options.
+#
+
+program=${0##*/sub}
+declare -a DEFAULT_FILE_LOCATION
+DEFAULT_FILE_LOCATION[1]=$SCRIPT_ROOT/subrc
+DEFAULT_FILE_LOCATION[2]=~/.subrc
+if [ `pwd` != ~ ]; then
+    DEFAULT_FILE_LOCATION[3]=.subrc
+fi
+for DEFAULT_FILE in ${DEFAULT_FILE_LOCATION[@]}; do
+    if [ -f "$DEFAULT_FILE" -a -r "$DEFAULT_FILE" ]; then
+        PARAMETER=`sed -n -e "/^ *$program/s/$program *//p" $DEFAULT_FILE`
+        if [ -n "$PARAMETER" ]; then
+            settings $PARAMETER
+        fi
+    fi
+done
+
+#
+# Now process the command line.
+#
+
+settings "$@"
+
+#
+# Shift the arguments up to the input without the option prefix "-".
+# This should be the filename.
+#
+
+shift $((OPTIND-1))
+
+#
+# Is the requested version of ORCA available?
+#
+
+case "$version" in
+
+        504) printExit W "ORCA 5.0.4 requested, but suborca now enforces ORCA 6.0.1."
+            module="orca/avx2-6.0.1" ;;
+
+        601) module="orca/avx2-6.0.1" ;;
+
+           *) printExit E "Unknown program version requested."
+
+esac
+
+#
+# Setup the default locations for the submitscript and the output/error
+# files.
+#
+
+submitfiledir=$HOME/cmd
+[ -d $submitfiledir ] || mkdir $submitfiledir || printExit E "Can't create \"$submitfiledir\"."
+[ -r $submitfiledir -a -w $submitfiledir ] || printExit E "Invalid permissions for \"$submitfiledir\"."
+stdoutdir=$HOME/err
+[ -d $stdoutdir ] || mkdir $stdoutdir || printExit E "Can't create \"$stdoutdir\"."
+[ -r $stdoutdir -a -w $stdoutdir ] || printExit E "Invalid permissions for \"$stdoutdir\"."
+
+#
+# Test, whether was a filename specified at all. Else exit.
+#
+
+if [ -z "$1" ] ; then
+    printExit E "No filename specified."
+else
+    myname=$1
+fi
+
+#
+# Assemble the names for the input, output and error file.
+#
+
+inputsuffix=(.inp)
+outputsuffix=(.out)
+choices=${#inputsuffix[*]}
+found=""
+
+if [ "${myname##*.}" != "$myname" ] ; then
+    for ((suffix=0; suffix<choices; suffix++)) ; do
+        if [ ".${myname##*.}" = "${inputsuffix[$suffix]}" ] ; then
+            testFile "$myname"
+            found="1"
+            jobname=${myname%${inputsuffix[$suffix]}}
+            if [ "${jobname:0:1}" = "/" ] ; then
+                infile=$jobname${inputsuffix[$suffix]}
+                outfile=$jobname${outputsuffix[$suffix]}
+            else
+                infile=$PWD/$jobname${inputsuffix[$suffix]}
+                outfile=$PWD/$jobname${outputsuffix[$suffix]}
+            fi
+            break
+        fi
+    done
+fi
+
+if [ -z "$found" ] ; then
+    jobname="$myname"
+    for ((suffix=0; suffix<choices; suffix++)) ; do
+        if testFile "$jobname${inputsuffix[$suffix]}" "return" ; then
+            if [ -n "$found" ] ; then
+                printExit E "The name \"$myname\" is ambiguous, because more than one file with the possible suffixes [ ${inputsuffix[*]} ] exist."
+            else
+                found="1"
+                if [ "${jobname:0:1}" = "/" ] ; then
+                    infile=$jobname${inputsuffix[$suffix]}
+                    outfile=$jobname${outputsuffix[$suffix]}
+                else
+                    infile=$PWD/$jobname${inputsuffix[$suffix]}
+                    outfile=$PWD/$jobname${outputsuffix[$suffix]}
+                fi
+            fi
+        fi
+    done
+    if [ -z "$found" ] ; then
+        if testFile "$myname" "return" ; then
+            printExit E "Your file \"$myname\" was found, but you have to append a suffix { ${inputsuffix[*]} } for clearness."
+        else
+            printExit E "No file \"$myname\" ending in [ ${inputsuffix[*]} ] was found."
+        fi
+    fi
+fi
+
+#
+# Set some other filenames.
+#
+
+jobname=${jobname##*/}
+if [ ! "$CMDOPT_N" ]; then
+    jobtitle=$jobname
+else
+    if [ "${jobtitle:${#jobtitle}-1:1}" = "#" ]; then
+        jobtitle="${jobtitle:0:${#jobtitle}-1}$jobname"
+    fi
+fi
+jobpath=${infile%/*}
+
+submitfile=$submitfiledir/$jobname.orca.sh
+stderrfile=$stdoutdir/$jobname.stderr
+stdoutfile=$stdoutdir/$jobname.stdout
+rm -f $submitfile
+rm -f $stderrfile
+rm -f $stdoutfile
+
+#
+# Test the option string for spaces.
+#
+
+if [ "$resources" != "${resources/ //}" ]; then
+    printExit E "The option string supplied to -o must not contain any spaces."
+fi
+
+#
+# Give the user some feedback, that all tests went okay, and the job is to
+# be submitted.
+#
+
+echo "Submitting an ORCA calculation for: ${infile##*/}"
+echo "Memory: $memory MB, #CPU: $((nodes * cpunr)), Time: $time_limit"
+
+#
+# Open the file descriptor 3 for the output of the assembled
+# submit script.
+#
+
+exec 3> $submitfile
+
+#
+# Write the standard header to the submit file. This lines will be there in every case.
+#
+
+cat >&3 <<-EOF
+	#!/bin/bash 
+	#SBATCH -J $jobtitle
+	#SBATCH -o ${stdoutfile}_%j
+	#SBATCH -e ${stderrfile}_%j
+    #SBATCH --time=$time_limit
+	#SBATCH --mail-type=end
+	#SBATCH --mail-type=fail
+	#SBATCH --mem=${memory}
+	EOF
+
+#
+# If the user puts the job on hold, include this.
+#
+
+if [ -n "$CMDOPT_H" ] ; then
+    echo "#SBATCH -H" >&3
+fi
+
+#
+# If the user specify some extra options, include this line in the
+# submit file.
+#
+
+if [ -n "$resources" ] ; then
+    echo "#SBATCH -B $resources" >&3
+fi
+
+#
+# The input file name
+#
+orca_infile=$jobname.inp
+
+#
+# Generate the whole script now.
+#
+
+cat >&3 <<-EOF
+	#SBATCH --nodes=$nodes
+	#SBATCH --ntasks-per-node=$cpunr
+    module load gcc
+    module unload orca >/dev/null 2>&1 || true
+    module load $module
+    orca_bin=\$(which orca)
+    if [ -z "\$orca_bin" ]; then
+        echo "ERROR: ORCA executable not found after loading module $module" >&2
+        exit 1
+    fi
+    case "\$orca_bin" in
+        *6.0.1*) ;;
+        *)
+            echo "ERROR: Wrong ORCA resolved: \$orca_bin" >&2
+            echo "ERROR: Expected ORCA 6.0.1 (module: $module)" >&2
+            exit 1
+            ;;
+    esac
+    
+    cd \$SLURM_TMPDIR
+    awk -v cpunr=$((nodes * cpunr)) -f $SCRIPT_ROOT/orca.awk $infile > $orca_infile
+    orca_bin=\$(which orca)
+    "\$orca_bin" $orca_infile > $outfile
+    joberror=\$?
+
+    # Create a .err marker if ORCA did not finish successfully
+    if [ $joberror -ne 0 ] || ! grep -q "ORCA TERMINATED NORMALLY" "$outfile"; then
+        errfile="$jobpath/${jobname}.err"
+        {
+            echo "ORCA job failed or terminated abnormally"
+            echo "Input: $orca_infile"
+            echo "Exit code: $joberror"
+            echo "Date: $(date)"
+            echo
+            echo "Last 100 lines of output:"
+            tail -100 "$outfile"
+        } > "$errfile"
+    fi
+	EOF
+
+#
+# Delete the $TMPDIR and give back the error, to avoid confusion.
+#
+
+cat >&3 <<-EOF
+    cp *.gbw *.prop *.hess *.uno *.qro *.loc *.xyz *.nbo $jobpath 2>/dev/null || true
+    cp "$outfile" "$jobpath/" 2>/dev/null || true
+    exit \$joberror
+	EOF
+
+#
+# Close the file descriptor for the submit file.
+#
+
+exec 3>&-
+
+#
+# Now, there are only two things left to do:
+# Submit the submitfile, and afterwards delete it.
+# (Unless "keep" option selected.)
+#
+
+if [ -z "$CMDOPT_K" ] ; then
+    sbatch $submitfile
+    rm -f $submitfile
+else
+    echo "Keeping the submitfile. Necessary command to submit this job:"
+    echo "    sbatch $submitfile"
+fi
+
+#
+# Well, that's all. Now exit in a proper way.
+#
+
+exit 0
